@@ -92,7 +92,7 @@ class Replay
     @@goal_data_keys = ['frame', 'PlayerName', 'PlayerTeam']
 
     # ground, crossbar, aerial
-    @@height_bounds = [90, 250, 600]
+    @@height_bounds = [120, 250, 600]
 
     def initialize(file_name)
         @file = File.read(file_name)
@@ -549,10 +549,12 @@ class Replay
 
         position_frames = {}
         height_frames = {}
+        zone_frames = {}
 
         (@player_cars.keys << 'ball').each{ |key|
             position_frames[key] = {'orange' => 0, 'blue' => 0}
             height_frames[key] = {'low' => 0, 'medium' => 0, 'high' => 0, 'count' => 0}
+            zone_frames[key] = {'orange' => 0, 'blue' => 0, 'midfield' => 0}
         }
 
         @position_data.each{ |frame, pos_data|
@@ -565,9 +567,25 @@ class Replay
                     elsif data['y'] < 0 then
                         position_frames[data_id]['blue'] = position_frames[data_id]['blue'] + 1
                     end
-                    height_frames[data_id]['low'] = height_frames[data_id]['low'] + 1 if data['z'] > @@height_bounds[0]
-                    height_frames[data_id]['medium'] = height_frames[data_id]['medium'] + 1 if data['z'] > @@height_bounds[1]
-                    height_frames[data_id]['high'] = height_frames[data_id]['high'] + 1 if data['z'] > @@height_bounds[2]
+
+                    # NOTE: Switch from 1666.665 to 1800.
+                    if data['y'] > 2000 then
+                        zone_frames[data_id]['orange'] = zone_frames[data_id]['orange'] + 1
+                    elsif data['y'] < -2000 then
+                        zone_frames[data_id]['blue'] = zone_frames[data_id]['blue'] + 1
+                    else
+                        zone_frames[data_id]['midfield'] = zone_frames[data_id]['midfield'] + 1
+                    end
+
+                    if data['z'] > @@height_bounds[0] then
+                        height_frames[data_id]['low'] = height_frames[data_id]['low'] + 1
+                        if data['z'] > @@height_bounds[1] then
+                            height_frames[data_id]['medium'] = height_frames[data_id]['medium'] + 1
+                            if data['z'] > @@height_bounds[2] then
+                                height_frames[data_id]['high'] = height_frames[data_id]['high'] + 1
+                            end
+                        end
+                    end
                     height_frames[data_id]['count'] = height_frames[data_id]['count'] + 1
                 end
             }
@@ -583,16 +601,17 @@ class Replay
             if player_id != 'ball' then
                 uuID = @uuID_to_player_id[player_id.to_s]
                 player_team = p_short[uuID]['Team']
-                p_short[uuID]['Attack_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, player_team)]).round(2)
-                p_short[uuID]['Defense_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[player_team]).round(2)
-                p_short[uuID]['Attack_%'] = ((frame_data[opposite(teams, player_team)].to_f / num_frames) * 100.0).round(2)
-                p_short[uuID]['Defense_%'] = ((frame_data[player_team].to_f / num_frames) * 100.0).round(2)
+                p_short[uuID][opposite(teams, player_team).capitalize + '_Side_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, player_team)]).round(2)
+                p_short[uuID][player_team.capitalize + '_Side_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[player_team]).round(2)
+                #p_short[uuID]['Attack_%'] = ((frame_data[opposite(teams, player_team)].to_f / num_frames) * 100.0).round(2)
+                #p_short[uuID]['Defense_%'] = ((frame_data[player_team].to_f / num_frames) * 100.0).round(2)
             else
                 ['orange', 'blue'].each_with_index{ |team, i|
-                    t_short[team]['Attack_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[team]).round(2)
-                    t_short[team]['Defense_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
-                    t_short[team]['Attack_%'] = ((frame_data[team].to_f / num_frames) * 100.0).round(2)
-                    t_short[team]['Defense_%'] = ((frame_data[opposite(teams, team)].to_f / num_frames) * 100.0).round(2)
+                    #t_short[team]['Ball_' + opposite(teams, team).capitalize + '_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[team]).round(2)
+                    #t_short[team]['Ball_' + team.capitalize + '_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
+                    #t_short[team]['Attack_%'] = ((frame_data[team].to_f / num_frames) * 100.0).round(2)
+                    #t_short[team]['Defense_%'] = ((frame_data[opposite(teams, team)].to_f / num_frames) * 100.0).round(2)
+                    e_short['Ball_' + team.capitalize + '_Side'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
                 }
             end
         }
@@ -607,6 +626,23 @@ class Replay
                 p_short[uuID]['Airtime_Low'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['low']).round(2)
                 p_short[uuID]['Airtime_Medium'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['medium']).round(2)
                 p_short[uuID]['Airtime_High'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['high']).round(2)
+            end
+        }
+
+        #Orange_Zone_Time
+        #Blue_Zone_Time
+        #Midfield_Time
+        zone_frames.each{ |object_id, frame_data|
+            num_frames = frame_data.values[0] + frame_data.values[1] + frame_data.values[2]
+            if object_id == 'ball' then
+                e_short['Ball_Orange_Zone'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['orange']).round(2)
+                e_short['Ball_Blue_Zone'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['blue']).round(2)
+                e_short['Ball_Midfield'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['midfield']).round(2)
+            else
+                uuID = @uuID_to_player_id[object_id.to_s]
+                p_short[uuID]['Orange_Zone_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['orange']).round(2)
+                p_short[uuID]['Blue_Zone_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['blue']).round(2)
+                p_short[uuID]['Midfield_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['midfield']).round(2)
             end
         }
 
