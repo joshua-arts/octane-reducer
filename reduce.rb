@@ -16,27 +16,21 @@ Rocket League Replays.
 
 TODO:
 
-player side of field data (stem off ball checking, will need to only count
-    where play is on).
-    
-player air time
 lb positions
-boost pickups ("TAGame.VehiclePickup_Boost_TA")
+shot distance / speed
+matchtype in extra data & base point values off it
 
-fix scores
 more accurate boost data
 fix boost_data in OT.
 test if kickoffs still correct after 0 second goal.
 test proximity to ball every frame (not sure if can do)
+sub playing_players for player_cars.keys
+make sure defense / offense numbers for sides of field aren't swapped
+    essentially players always spend more time on defense.
 
 =end
 
 require 'json'
-
-# - Variables to make a few lines shorter - #
-
-$id_act = 'Engine.PlayerReplicationInfo:UniqueId'
-$val = 'Value'
 
 # - Helpers Methods - #
 
@@ -51,8 +45,7 @@ def compute_points_score(actor)
     shots = check_for_stat(actor, 'TAGame.PRI_TA:MatchShots')
     assists = check_for_stat(actor, 'TAGame.PRI_TA:MatchAssists')
     saves = check_for_stat(actor, 'TAGame.PRI_TA:MatchSaves')
-    # TODO: These values need tweaking...
-    (goals * 100) + (assists * 50) + (saves * 50) + (shots * 30)
+    (goals * 50) + (assists * 25) + (saves * 25) + (shots * 15)
 end
 
 # Determines a players team.
@@ -80,13 +73,11 @@ end
 
 # Takes a 2 element array and an element, returns the one you don't pass.
 def opposite(arr, ind)
-    return arr[1] if ind == 0
+    return arr[1] if ind == arr[0]
     arr[0]
 end
 
 class Replay
-
-    attr_accessor :important_data
 
     # Keys to extract data from the metadata.
     @@meta_data_keys = ['MaxChannels', 'Team0Score', 'Team1Score', 'PlayerName', 'KeyframeDelay',
@@ -100,6 +91,9 @@ class Replay
     # Keys to extract data from the goals.
     @@goal_data_keys = ['frame', 'PlayerName', 'PlayerTeam']
 
+    # ground, crossbar, aerial
+    @@height_bounds = [90, 250, 600]
+
     def initialize(file_name)
         @file = File.read(file_name)
         @data = JSON.parse(@file)
@@ -110,9 +104,11 @@ class Replay
         @goals = @metadata['Goals']['Value']
         @frames = @data['Frames']
 
+        # Maps player uuID's to their player actor ID.
+        @uuID_to_player_id = {}
+
         # Stores position_data for all important actors, and the ball.
         @position_data = {}
-        @ball_only = {}
 
         # Stores the frames in which each player is closest to the ball.
         @frames_closest_raw = []
@@ -133,10 +129,10 @@ class Replay
         @boost_data = {}
         @unknown_boost_data = {}
         @time_boost_data = {}
+        @boost_pickups_raw = []
 
         # Maps current frame to the time remaining on the clock.
         @time_map = {}
-        @ball_over_time = {}
         @time_position_data = {}
 
         # JSON Object to store the important_data
@@ -169,6 +165,16 @@ class Replay
         JSON.pretty_generate(@important_data)
     end
 
+    def octane_json
+        JSON.pretty_generate(@data)
+    end
+
+    def reduce
+        get_metadata()
+        get_goals()
+        get_frames()
+    end
+
     # Read replay metadata.
     def get_metadata()
         @@meta_data_keys.each{ |key|
@@ -191,10 +197,8 @@ class Replay
     def get_frames()
         @frames.each_with_index{ |frame, i|
 
-            # Create new frame instances for position objects.
-            # NOTE: Change to use JSON objects.
-            @position_data[i] = []
-            @ball_only[i] = []
+            # Create new frame instances for position object.
+            @position_data[i] = {}
 
             ball_hit = false
             ball_spawned = false
@@ -224,6 +228,7 @@ class Replay
             # Add the actor since it just spawned.
             @actors[key] = s_actor if !@actors.has_key?(key)
 
+            # TODO: can this be moved to search_actors()
             if s_actor.has_key?("Engine.Pawn:PlayerReplicationInfo") then
                 player_actor_id = s_actor['Engine.Pawn:PlayerReplicationInfo']['Value']['Int']
                 @player_cars[player_actor_id] = key
@@ -248,8 +253,6 @@ class Replay
                     @team_info[key] = s_actor['Name']
                 end
             end
-
-            # more stuff here.
         }
     end
 
@@ -316,8 +319,7 @@ class Replay
                     'roll' => rot_data[2]
                 }
 
-                @position_data[frame] << pos_instance
-                @ball_only[frame] << pos_instance if real_player == "ball"
+                @position_data[frame][real_player] = pos_instance
 
             end
 
@@ -414,13 +416,23 @@ class Replay
 
     # - Analysis Methods - #
 
-    def analyze()
+    def analyze
+
         # If the clock has 1 seconds twice, we went into overtime.
         @overtime = (@time_map.values.count(1) > 1)
         @important_data['extra_data']['Overtime'] = @overtime
 
         # A list a players who have cars (excludes spectators).
         playing_players = @player_cars.keys
+
+        playing_players.each{ |player_id|
+            @player_actors.each{ |key, actor|
+                if key.to_i == player_id.to_i then
+                    @uuID_to_player_id[key] = actor['Engine.PlayerReplicationInfo:UniqueId']['Value']['Remote']['Value']
+                    break
+                end
+            }
+        }
 
         # Extracts data from the actors and records for each playing player.
         record_player_data(playing_players)
@@ -429,12 +441,10 @@ class Replay
         record_boost_data(playing_players)
 
         # Map the ball position to the clock.
-        map_position_data_over_time()
-        map_ball_position_over_time()
+        map_position_over_time()
 
-        # Record the amount of team the ball is in each zone.
-        record_zone_time_frames()
-        # record_zone_time_mapped()
+        # Record the amount of time each player is in each zone, as well as the ball.
+        record_zone_time()
 
         # Determine who won each kickoff.
         record_kickoffs()
@@ -464,7 +474,7 @@ class Replay
                     'Saves' => check_for_stat(actor, 'TAGame.PRI_TA:MatchSaves'),
                     'Points_Score' => compute_points_score(actor),
                     'Play_Score' => check_for_stat(actor, 'TAGame.PRI_TA:MatchScore') - compute_points_score(actor),
-                    'ID' => actor[$id_act]['Value']['Remote']['Value'],
+                    'ID' => @uuID_to_player_id[key],
                     'Team' => find_player_team(@player_stats, actor['Engine.PlayerReplicationInfo:PlayerName']['Value'])}
                 @important_data['player_data'][player_data['ID']] = player_data
             end
@@ -483,7 +493,7 @@ class Replay
         @player_actors.each{ |key, actor|
             # Ignore spectators and such.
             if @boost_data.has_key?(key.to_i) then
-                mapped_boost_data[actor[$id_act]['Value']['Remote']['Value']] = @boost_data[key.to_i]
+                mapped_boost_data[@uuID_to_player_id[key]] = @boost_data[key.to_i]
             end
         }
 
@@ -521,10 +531,7 @@ class Replay
         }
     end
 
-    # TODO: Merge the following to functions to map_over_time()
-
-    def map_position_data_over_time()
-        # Map position data to time.
+    def map_position_over_time()
         overtime_on = false
         @position_data.each{ |frame, p_data|
             time_key = select_closest(@time_map.keys, frame)
@@ -538,88 +545,80 @@ class Replay
         }
     end
 
-    def map_ball_position_over_time()
-        # Map ball postion data to time.
-        overtime_log = {}
-        overtime_on = false
-        @ball_only.each{ |frame, p_data|
-            time_key = select_closest(@time_map.keys, frame)
-            if overtime_on then
-                @ball_over_time[0 - @time_map[time_key]] = p_data[0]
+    def record_zone_time()
+
+        position_frames = {}
+        height_frames = {}
+
+        (@player_cars.keys << 'ball').each{ |key|
+            position_frames[key] = {'orange' => 0, 'blue' => 0}
+            height_frames[key] = {'low' => 0, 'medium' => 0, 'high' => 0, 'count' => 0}
+        }
+
+        @position_data.each{ |frame, pos_data|
+            next if pos_data == nil
+            pos_data.each{ |data_id, data|
+                #data_id = data['id']
+                if position_frames.has_key?(data_id) then
+                    if data['y'] > 0 then
+                        position_frames[data_id]['orange'] = position_frames[data_id]['orange'] + 1
+                    elsif data['y'] < 0 then
+                        position_frames[data_id]['blue'] = position_frames[data_id]['blue'] + 1
+                    end
+                    height_frames[data_id]['low'] = height_frames[data_id]['low'] + 1 if data['z'] > @@height_bounds[0]
+                    height_frames[data_id]['medium'] = height_frames[data_id]['medium'] + 1 if data['z'] > @@height_bounds[1]
+                    height_frames[data_id]['high'] = height_frames[data_id]['high'] + 1 if data['z'] > @@height_bounds[2]
+                    height_frames[data_id]['count'] = height_frames[data_id]['count'] + 1
+                end
+            }
+        }
+
+        teams = ['orange','blue']
+        p_short = @important_data['player_data']
+        t_short = @important_data['team_data']
+        e_short = @important_data['extra_data']
+
+        position_frames.each{ |player_id, frame_data|
+            num_frames = frame_data.values[0] + frame_data.values[1]
+            if player_id != 'ball' then
+                uuID = @uuID_to_player_id[player_id.to_s]
+                player_team = p_short[uuID]['Team']
+                p_short[uuID]['Attack_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, player_team)]).round(2)
+                p_short[uuID]['Defense_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[player_team]).round(2)
+                p_short[uuID]['Attack_%'] = ((frame_data[opposite(teams, player_team)].to_f / num_frames) * 100.0).round(2)
+                p_short[uuID]['Defense_%'] = ((frame_data[player_team].to_f / num_frames) * 100.0).round(2)
             else
-                @ball_over_time[@time_map[time_key]] = p_data[0]
+                ['orange', 'blue'].each_with_index{ |team, i|
+                    t_short[team]['Attack_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[team]).round(2)
+                    t_short[team]['Defense_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
+                    t_short[team]['Attack_%'] = ((frame_data[team].to_f / num_frames) * 100.0).round(2)
+                    t_short[team]['Defense_%'] = ((frame_data[opposite(teams, team)].to_f / num_frames) * 100.0).round(2)
+                }
             end
-            @ball_over_time[@time_map[time_key]] = p_data[0]
-            overtime_on = true if @time_map[time_key] == 0
         }
-    end
 
-    def record_zone_time_mapped()
-        # Determine what side of the field the ball is on.
-        blue_seconds = orange_seconds = exact_zero = 0
-        @ball_over_time.each{ |time, data|
-            if data == nil then
-                exact_zero = exact_zero + 1
-                next
-            end
-            if data['y'] > 0 then
-                orange_seconds = orange_seconds + 1
-            elsif data['y'] < 0 then
-                blue_seconds = blue_seconds + 1
+        height_frames.each{ |object_id, frame_data|
+            if object_id == 'ball' then
+                e_short['Ball_Airtime_Low'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['low']).round(2)
+                e_short['Ball_Airtime_Medium'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['medium']).round(2)
+                e_short['Ball_Airtime_High'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['high']).round(2)
             else
-                exact_zero = exact_zero + 1
+                uuID = @uuID_to_player_id[object_id.to_s]
+                p_short[uuID]['Airtime_Low'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['low']).round(2)
+                p_short[uuID]['Airtime_Medium'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['medium']).round(2)
+                p_short[uuID]['Airtime_High'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['high']).round(2)
             end
         }
 
-        # Just divide the extra faceoff seconds up.
-        # Allocate the extra one to a team if needed.
-        if exact_zero % 2 == 0 and exact_zero > 0 then
-            blue_seconds = blue_seconds + (exact_zero / 2)
-            orange_seconds = orange_seconds + (exact_zero / 2)
-        else
-            exact_zero = exact_zero - 1
-            blue_seconds = blue_seconds + (exact_zero / 2)
-            orange_seconds = orange_seconds + (exact_zero / 2) + 1
-        end
-
-        times  = [orange_seconds, blue_seconds]
-        num_seconds = orange_seconds + blue_seconds
-
-        ['orange', 'blue'].each_with_index{ |team, i|
-            @important_data['team_data'][team]['Attack_Time'] = times[i]
-            @important_data['team_data'][team]['Defense_Time'] = opposite(times, i)
-            @important_data['team_data'][team]['Attack_%'] = ((times[i].to_f / num_seconds) * 100.0).round
-            @important_data['team_data'][team]['Defense_%'] = ((opposite(times, i).to_f / num_seconds) * 100.0).round
-        }
-    end
-
-    def record_zone_time_frames()
-        orange_frames = blue_frames = 0
-        @ball_only.each{ |frame, pos_data|
-            data = pos_data[0]
-            next if data == nil
-            if data['y'] > 0 then
-                orange_frames = orange_frames + 1
-            elsif data['y'] < 0 then
-                blue_frames = blue_frames + 1
-            end
-        }
-
-        frame_arr  = [orange_frames, blue_frames]
-        num_frames = orange_frames + blue_frames
-
-        ['orange', 'blue'].each_with_index{ |team, i|
-            @important_data['team_data'][team]['Attack_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_arr[i]).round(2)
-            @important_data['team_data'][team]['Defense_Time'] = ((@time_map.keys.length / num_frames.to_f) * opposite(frame_arr, i)).round(2)
-            @important_data['team_data'][team]['Attack_%'] = ((frame_arr[i].to_f / num_frames) * 100.0).round(2)
-            @important_data['team_data'][team]['Defense_%'] = ((opposite(frame_arr, i).to_f / num_frames) * 100.0).round(2)
-        }
     end
 
     def tally_kickoff(second)
-        if @ball_over_time[second]['y'] > 0 then
+        if !@time_position_data[second].has_key?('ball') then
+            raise "ERROR: Couldn't find ball at clock time " + second.to_s
+        end
+        if @time_position_data[second]['ball']['y'] > 0 then
             @blue_kickoffs = @blue_kickoffs + 1
-        elsif @ball_over_time[second]['y'] < 0 then
+        elsif @time_position_data[second]['ball']['y'] < 0 then
             @orange_kickoffs = @orange_kickoffs + 1
         else
             raise "ERROR: Ball position still zero when checking kickoff result."
@@ -636,7 +635,7 @@ class Replay
             # TODO: Needs to be seconds closest without going over...
             # Find the second to check position.
             kickoff_check = (@time_map[select_closest(@time_map.keys, data['frame'])] - @kickoff_time_delay)
-            if(@ball_over_time.has_key?(kickoff_check)) then
+            if(@time_position_data.has_key?(kickoff_check)) then
                 tally_kickoff(kickoff_check)
             else
                 raise "ERROR: Can't find position data for second after kickoff."
@@ -646,12 +645,12 @@ class Replay
         # NOTE: Can you score in a second? If so I need to check here then...
 
         # Tally the first kickoff a second after the faceoff.
-        if @ball_over_time.has_key?(299) then
+        if @time_position_data.has_key?(299) then
             tally_kickoff(299)
         end
 
         # Tally the overtime kickoff a second after the faceoff if it happened.
-        if @overtime && @ball_over_time.has_key?(-1) then
+        if @overtime && @time_position_data.has_key?(-1) then
             tally_kickoff(-1)
         end
 
@@ -669,8 +668,8 @@ class Replay
             low_player = nil
 
             # Find the ball points at that frame.
-            data.each{ |set, set_num|
-                if set['id'] == "ball" then
+            data.each{ |key, set|
+                if key == "ball" then
                     ball_points = set
                     break
                 end
@@ -678,13 +677,13 @@ class Replay
 
             next if ball_points == nil
 
-            data.each{ |set, set_num|
-                if set['id'] != "ball" then
+            data.each{ |key, set|
+                if key != "ball" then
                     dist = distance(set, ball_points)
 
                     if dist < low then
                         low = dist
-                        low_player = set['id']
+                        low_player = key
                     end
                 end
             }
@@ -698,16 +697,10 @@ class Replay
         }
 
         # Count the closest player data and add it.
-        data_id = 0
         @frames_closest_raw.each{ |player_id|
-            @player_actors.each{ |key, actor|
-                if key.to_i == player_id.to_i then
-                    data_id = actor[$id_act][$val]['Remote'][$val]
-                    @important_data['player_data'][data_id]['Frames_Closest'] = 0 unless @important_data['player_data'][data_id].has_key?('Frames_Closest')
-                    @important_data['player_data'][data_id]['Frames_Closest'] = @important_data['player_data'][data_id]['Frames_Closest'] + 1
-                    break
-                end
-            }
+            data_id = @uuID_to_player_id[player_id.to_s]
+            @important_data['player_data'][data_id]['Frames_Closest'] = 0 unless @important_data['player_data'][data_id].has_key?('Frames_Closest')
+            @important_data['player_data'][data_id]['Frames_Closest'] = @important_data['player_data'][data_id]['Frames_Closest'] + 1
         }
 
         # Record as a percentage.
@@ -733,6 +726,7 @@ class Replay
 
         @important_data['extra_data']['GWG_Name'] = gwg_name
         # TODO: Add GWG by ID.
+
     end
 
     def find_mvp()
@@ -746,7 +740,7 @@ class Replay
 
         mvp_id = score_data.key(score_data.values.max)
 
-        important_data['player_data'].each{ |player_num, player_info|
+        @important_data['player_data'].each{ |player_num, player_info|
             player_info['MVP'] = (mvp_id == player_num)
         }
 
@@ -802,12 +796,10 @@ end
 # - Read Data - #
 
 replay = Replay.new('./output.json')
-
-replay.get_metadata()
-replay.get_goals()
-replay.get_frames()
+replay.reduce
 
 # - Analyze Data - #
 
-replay.analyze()
+replay.analyze
 puts replay.to_s
+#puts replay.octane_json
