@@ -8,7 +8,7 @@ meaningful data, then performs an analysis on that data to output a JSON file
 containing stats that the game itself can't provide (like boost analysis,
 possession numbers, etc).
 
-If you see and missed calculations or errors, please let me know!
+If you see any missed calculations or errors, please let me know!
 
 Also, lots of credit to Daniel Samuels. The way in which I read the Octane JSON
 file and extracted that data was heavily inspired by the way he does it for
@@ -24,9 +24,6 @@ more accurate boost data
 fix boost_data in OT.
 test if kickoffs still correct after 0 second goal.
 test proximity to ball every frame (not sure if can do)
-sub playing_players for player_cars.keys
-make sure defense / offense numbers for sides of field aren't swapped
-    essentially players always spend more time on defense.
 
 =end
 
@@ -831,11 +828,11 @@ end
 
 # - Read Data - #
 
-replay = Replay.new('./output.json')
+replay = Replay.new('./sample.json')
 replay.reduce
 
 # - Analyze Data - #
 
 replay.analyze
 puts replay.to_s
-#puts replay.octane_json
+puts replay.octane_json
