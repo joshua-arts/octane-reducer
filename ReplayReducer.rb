@@ -8,7 +8,7 @@ meaningful data, then performs an analysis on that data to output a JSON file
 containing stats that the game itself can't provide (like boost analysis,
 possession numbers, etc).
 
-If you see any missed calculations or errors, please let me know!
+If you see and missed calculations or errors, please let me know!
 
 Also, lots of credit to Daniel Samuels. The way in which I read the Octane JSON
 file and extracted that data was heavily inspired by the way he does it for
@@ -24,6 +24,9 @@ more accurate boost data
 fix boost_data in OT.
 test if kickoffs still correct after 0 second goal.
 test proximity to ball every frame (not sure if can do)
+sub playing_players for player_cars.keys
+make sure defense / offense numbers for sides of field aren't swapped
+    essentially players always spend more time on defense.
 
 =end
 
@@ -74,7 +77,7 @@ def opposite(arr, ind)
     arr[0]
 end
 
-class Replay
+class ReplayReducer
 
     # Keys to extract data from the metadata.
     @@meta_data_keys = ['MaxChannels', 'Team0Score', 'Team1Score', 'PlayerName', 'KeyframeDelay',
@@ -91,9 +94,10 @@ class Replay
     # ground, crossbar, aerial
     @@height_bounds = [120, 250, 600]
 
-    def initialize(file_name)
-        @file = File.read(file_name)
-        @data = JSON.parse(@file)
+    def initialize(oct_json)
+        #@file = File.read(file_name)
+        #@data = JSON.parse(@file)
+        @data = oct_json
 
         # Divide up the important data segments.
         @metadata = @data['Metadata']
@@ -164,6 +168,10 @@ class Replay
 
     def octane_json
         JSON.pretty_generate(@data)
+    end
+
+    def get_important_data
+        @important_data
     end
 
     def reduce
@@ -402,7 +410,7 @@ class Replay
 
         # Get server name.
         if actor_data.has_key?('Engine.GameReplicationInfo:ServerName') then
-            @important_data['extra_data']['Server_Name'] = actor_data['Engine.GameReplicationInfo:ServerName']['Value']
+            @important_data['metadata']['ServerName'] = actor_data['Engine.GameReplicationInfo:ServerName']['Value']
         end
 
         # Get max team size.
@@ -431,6 +439,8 @@ class Replay
             }
         }
 
+        record_time()
+
         # Extracts data from the actors and records for each playing player.
         record_player_data(playing_players)
 
@@ -457,6 +467,10 @@ class Replay
 
         # Record team data.
         record_team_data()
+    end
+
+    def record_time()
+        @important_data['metadata']['MatchTime'] = @time_map.keys.length - 1
     end
 
     def record_player_data(playing_players)
@@ -797,7 +811,8 @@ class Replay
         num_seconds = @time_map.keys.length - 1
         @important_data['player_data'].each{ |team, players_by_team|
             team_score = team_boost = team_goals = team_assists = team_saves = team_shots = 0
-            team_points_score = team_play_score = team_possession = 0
+            team_points_score = team_play_score = team_possession = team_orange_zone = 0
+            team_blue_zone = team_midfield = team_air_time = 0
             players_by_team.each{ |uuID, player|
                 team_score += player['Score']
                 team_boost += player['AVG_Boost']
@@ -808,6 +823,10 @@ class Replay
                 team_points_score += player['Points_Score']
                 team_play_score += player['Play_Score']
                 team_possession += player['Frames_Closest']
+                team_orange_zone += player['Orange_Zone_Time']
+                team_blue_zone += player['Blue_Zone_Time']
+                team_midfield += player['Midfield_Time']
+                team_air_time += player['Airtime_Low']
             }
             short = @important_data['team_data'][team]
             short['Score'] = team_score
@@ -821,6 +840,10 @@ class Replay
             short['Play_Score'] = team_play_score
             short['Frames_Closest'] = team_possession
             short['Closest_Percent'] = ((team_possession.to_f / @frames_closest_raw.length) * 100.0).round
+            short['Orange_Zone_Time'] = team_orange_zone.round(2)
+            short['Blue_Zone_Time'] = team_blue_zone.round(2)
+            short['Midfield_Time'] = team_midfield.round(2)
+            short['Air_Time'] = team_air_time.round(2)
         }
     end
 
@@ -828,7 +851,7 @@ end
 
 # - Read Data - #
 
-replay = Replay.new('./sample.json')
+replay = ReplayReducer.new('./output.json')
 replay.reduce
 
 # - Analyze Data - #
