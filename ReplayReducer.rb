@@ -59,6 +59,14 @@ def find_player_team(octane_stats, name)
 end
 
 # Selects the closest value in list to the target.
+# NOTE: Redo this method...
+
+def select_closest_over(list, target)
+    list.each{ |val|
+        return val if val > target
+    }
+end
+
 def select_closest(list, target)
     (list.map {|x| [(x.to_f - target).abs, x]}).min[1]
 end
@@ -94,10 +102,10 @@ class ReplayReducer
     # ground, crossbar, aerial
     @@height_bounds = [120, 250, 600]
 
-    def initialize(oct_json)
-        #@file = File.read(file_name)
-        #@data = JSON.parse(@file)
-        @data = oct_json
+    def initialize(file_name)
+        @file = File.read(file_name)
+        @data = JSON.parse(@file)
+        #@data = oct_json
 
         # Divide up the important data segments.
         @metadata = @data['Metadata']
@@ -136,6 +144,12 @@ class ReplayReducer
         @time_map = {}
         @time_position_data = {}
 
+        # Store camera settings.
+        @camera_settings = {}
+
+        # Store posession.
+        @posession_map = {}
+
         # JSON Object to store the important_data
         @important_data = {'metadata' => {},
                           'player_data' => {},
@@ -158,8 +172,10 @@ class ReplayReducer
         # Needed extra data.
         @overtime = false
         @kickoff_time_delay = 2
-        @orange_kickoffs = 0
-        @blue_kickoffs = 0
+        @orange_kickoffs = @blue_kickoffs = 0
+
+        @goal_frames = []
+        @null_frames = [[],[]]
     end
 
     def to_s
@@ -362,6 +378,20 @@ class ReplayReducer
 
             end
 
+            if actor_data.has_key?('TAGame.CameraSettingsActor_TA:ProfileSettings') then
+                if @actors[key]['Class'] == 'TAGame.CameraSettingsActor_TA' then
+                    p_id = actor_data['TAGame.CameraSettingsActor_TA:PRI']['Value']['Int']
+                    #@actors[p_id]['TAGame.PRI_TA:CameraSettings'] = actor_data['TAGame.CameraSettingsActor_TA:ProfileSettings']['Value']
+                    @camera_settings[p_id] = actor_data['TAGame.CameraSettingsActor_TA:ProfileSettings']['Value']
+                end
+            end
+
+            # This only occurs when the ball has changed possession.
+            if actor_data.has_key?('TAGame.Ball_TA:HitTeamNum') then
+                #in_possession = actor_data['TAGame.Ball_TA:HitTeamNum']['Value']
+                @posession_map[frame] = actor_data['TAGame.Ball_TA:HitTeamNum']['Value']
+            end
+
             search_actors(actor_data, frame)
         }
 
@@ -417,6 +447,10 @@ class ReplayReducer
         if actor_data.has_key?('TAGame.GameEvent_Team_TA:MaxTeamSize') then
             @important_data['extra_data']['Max_Team_Size'] = actor_data['TAGame.GameEvent_Team_TA:MaxTeamSize']['Value']
         end
+
+        if actor_data.has_key?('ProjectX.GRI_X:ReplicatedGamePlaylist') then
+            @important_data['extra_data']['Playlist'] = actor_data['ProjectX.GRI_X:ReplicatedGamePlaylist']['Value']
+        end
     end
 
     # - Analysis Methods - #
@@ -450,6 +484,12 @@ class ReplayReducer
         # Map the ball position to the clock.
         map_position_over_time()
 
+        # Record position and distance data on the goals.
+        record_goal_data()
+
+        # Find the frames where they are not playing.
+        find_null_frames()
+
         # Record the amount of time each player is in each zone, as well as the ball.
         record_zone_time()
 
@@ -467,6 +507,9 @@ class ReplayReducer
 
         # Record team data.
         record_team_data()
+
+        # Record camera settings.
+        record_camera_settings()
     end
 
     def record_time()
@@ -486,7 +529,8 @@ class ReplayReducer
                     'Points_Score' => compute_points_score(actor),
                     'Play_Score' => check_for_stat(actor, 'TAGame.PRI_TA:MatchScore') - compute_points_score(actor),
                     'ID' => @uuID_to_player_id[key],
-                    'Team' => find_player_team(@player_stats, actor['Engine.PlayerReplicationInfo:PlayerName']['Value'])}
+                    'Team' => find_player_team(@player_stats, actor['Engine.PlayerReplicationInfo:PlayerName']['Value']),
+                    'Car' => actor['TAGame.PRI_TA:ClientLoadouts']['Value']['Loadout1']['Value']['Body']['Name']}
                 @important_data['player_data'][player_data['ID']] = player_data
             end
         }
@@ -561,6 +605,7 @@ class ReplayReducer
         position_frames = {}
         height_frames = {}
         zone_frames = {}
+        curr_posession = orange_posession = blue_posession = non_nill = 0
 
         (@player_cars.keys << 'ball').each{ |key|
             position_frames[key] = {'orange' => 0, 'blue' => 0}
@@ -600,7 +645,22 @@ class ReplayReducer
                     height_frames[data_id]['count'] = height_frames[data_id]['count'] + 1
                 end
             }
+
+            # Might as well do posession while we're looping.
+            curr_posession = @posession_map[frame] if @posession_map.has_key?(frame)
+            if !is_null_frame(frame) then
+                if curr_posession == 0 then
+                    orange_posession = orange_posession + 1
+                else
+                    blue_posession = blue_posession + 1
+                end
+                non_nill = non_nill + 1
+            end
         }
+
+        team_short = @important_data['team_data']
+        team_short['orange']['Posession'] = ((orange_posession / non_nill.to_f)* 100).round(2)
+        team_short['blue']['Posession'] = ((blue_posession / non_nill.to_f) * 100).round(2)
 
         teams = ['orange','blue']
         p_short = @important_data['player_data']
@@ -656,7 +716,6 @@ class ReplayReducer
                 p_short[uuID]['Midfield_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['midfield']).round(2)
             end
         }
-
     end
 
     def tally_kickoff(second)
@@ -705,6 +764,19 @@ class ReplayReducer
         @important_data['extra_data']['Kickoffs'] = @orange_kickoffs + @blue_kickoffs
         @important_data['team_data']['orange']['Kickoff_Wins'] = @orange_kickoffs
         @important_data['team_data']['blue']['Kickoff_Wins'] = @blue_kickoffs
+    end
+
+    def record_camera_settings()
+        @camera_settings.each{ |p_id, settings|
+            if @uuID_to_player_id.has_key?(p_id.to_s) then
+                uuID = @uuID_to_player_id[p_id.to_s]
+                if @important_data['player_data']['orange'].has_key?(uuID) then
+                    @important_data['player_data']['orange'][uuID]['Camera'] = settings
+                elsif @important_data['player_data']['blue'].has_key?(uuID) then
+                    @important_data['player_data']['blue'][uuID]['Camera'] = settings
+                end
+            end
+        }
     end
 
     def record_ball_proximity()
@@ -847,15 +919,43 @@ class ReplayReducer
         }
     end
 
+    def record_goal_data()
+        # Record ball position at frame of goal.
+        @important_data['goal_data'].each{ |num, goal|
+            @goal_frames << goal['frame']
+            pos_data = @position_data[goal['frame']]['ball']
+            goal["Position"] = {'x' => pos_data['x'],
+                                'y' => pos_data['y'],
+                                'z' => pos_data['z']}
+        }
+
+
+    end
+
+    def find_null_frames()
+        @goal_frames.each{ |frame|
+            f = select_closest_over(@time_map.keys, frame)
+            @null_frames[0] << frame
+            @null_frames[1] << f
+        }
+    end
+
+    def is_null_frame(frame)
+        @null_frames[0].length.times{ |i|
+            return true if frame > @null_frames[0][i] && frame < @null_frames[1][i]
+        }
+        false
+    end
+
 end
 
 # - Read Data - #
 
-replay = ReplayReducer.new('./output.json')
+replay = ReplayReducer.new('./res.json')
 replay.reduce
 
 # - Analyze Data - #
 
 replay.analyze
 puts replay.to_s
-puts replay.octane_json
+#puts replay.octane_json
