@@ -102,7 +102,7 @@ class ReplayReducer
     # ground, crossbar, aerial
     @@height_bounds = [120, 250, 600]
 
-    def initialize(file_name)
+    def initialize(oct_json)
         @file = File.read(file_name)
         @data = JSON.parse(@file)
         #@data = oct_json
@@ -743,6 +743,7 @@ class ReplayReducer
             kickoff_check = (@time_map[select_closest(@time_map.keys, data['frame'])] - @kickoff_time_delay)
             if(@time_position_data.has_key?(kickoff_check)) then
                 tally_kickoff(kickoff_check)
+            # Not sure if I need to error here. Should just ignore OT kickoff?
             else
                 raise "ERROR: Can't find position data for second after kickoff."
             end
@@ -814,18 +815,17 @@ class ReplayReducer
                 end
             }
         }
-
         # Count the closest player data and add it.
-        @frames_closest_raw.each{ |player_id|
-            data_id = @uuID_to_player_id[player_id.to_s]
-            @important_data['player_data'][data_id]['Frames_Closest'] = 0 unless @important_data['player_data'][data_id].has_key?('Frames_Closest')
-            @important_data['player_data'][data_id]['Frames_Closest'] = @important_data['player_data'][data_id]['Frames_Closest'] + 1
-        }
+        #@frames_closest_raw.each{ |player_id|
+        #    data_id = @uuID_to_player_id[player_id.to_s]
+        #    @important_data['player_data'][data_id]['Frames_Closest'] = 0 unless @important_data['player_data'][data_id].has_key?('Frames_Closest')
+        #    @important_data['player_data'][data_id]['Frames_Closest'] = @important_data['player_data'][data_id]['Frames_Closest'] + 1
+        #}
 
         # Record as a percentage.
-        @important_data['player_data'].each{ |uuID, player|
-            player['Closest_Percent'] = ((player['Frames_Closest'].to_f / @frames_closest_raw.length) * 100.0).round
-        }
+        #@important_data['player_data'].each{ |uuID, player|
+        #    player['Closest_Percent'] = ((player['Frames_Closest'].to_f / @frames_closest_raw.length) * 100.0).round
+        #}
     end
 
     def find_game_winning_goal()
@@ -894,7 +894,7 @@ class ReplayReducer
                 team_shots += player['Shots']
                 team_points_score += player['Points_Score']
                 team_play_score += player['Play_Score']
-                team_possession += player['Frames_Closest']
+                #team_possession += player['Frames_Closest']
                 team_orange_zone += player['Orange_Zone_Time']
                 team_blue_zone += player['Blue_Zone_Time']
                 team_midfield += player['Midfield_Time']
@@ -910,8 +910,8 @@ class ReplayReducer
             short['Shots'] = team_shots
             short['Points_Score'] = team_points_score
             short['Play_Score'] = team_play_score
-            short['Frames_Closest'] = team_possession
-            short['Closest_Percent'] = ((team_possession.to_f / @frames_closest_raw.length) * 100.0).round
+            #short['Frames_Closest'] = team_possession
+            #short['Closest_Percent'] = ((team_possession.to_f / @frames_closest_raw.length) * 100.0).round
             short['Orange_Zone_Time'] = team_orange_zone.round(2)
             short['Blue_Zone_Time'] = team_blue_zone.round(2)
             short['Midfield_Time'] = team_midfield.round(2)
@@ -919,17 +919,22 @@ class ReplayReducer
         }
     end
 
+    # Record ball position at frame of goal.
     def record_goal_data()
-        # Record ball position at frame of goal.
         @important_data['goal_data'].each{ |num, goal|
             @goal_frames << goal['frame']
-            pos_data = @position_data[goal['frame']]['ball']
+            if @position_data[goal['frame']].has_key?('ball') then
+                pos_data = @position_data[goal['frame']]['ball']
+            else
+                # Rare case where the ball doesn't exist at the logged ball frame.
+                # Should be able to just go back a frame, but need to test to make
+                # sure this always works.
+                pos_data = @position_data[goal['frame'].to_i - 1]['ball']
+            end
             goal["Position"] = {'x' => pos_data['x'],
                                 'y' => pos_data['y'],
                                 'z' => pos_data['z']}
         }
-
-
     end
 
     def find_null_frames()
@@ -941,8 +946,12 @@ class ReplayReducer
     end
 
     def is_null_frame(frame)
-        @null_frames[0].length.times{ |i|
-            return true if frame > @null_frames[0][i] && frame < @null_frames[1][i]
+        num_check = @null_frames.length
+        num_check = num_check - 1 if @overtime
+        num_check.times{ |i|
+            if @null_frames[0][i] && @null_frames[1][i] then
+                return true if frame > @null_frames[0][i] && frame < @null_frames[1][i]
+            end
         }
         false
     end
@@ -958,4 +967,4 @@ replay.reduce
 
 replay.analyze
 puts replay.to_s
-#puts replay.octane_json
+puts replay.octane_json
