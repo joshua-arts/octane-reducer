@@ -667,6 +667,8 @@ class ReplayReducer
         t_short = @important_data['team_data']
         e_short = @important_data['extra_data']
 
+        e_short['Ball'] = {}
+
         position_frames.each{ |player_id, frame_data|
             num_frames = frame_data.values[0] + frame_data.values[1]
             if player_id != 'ball' then
@@ -682,16 +684,16 @@ class ReplayReducer
                     #t_short[team]['Ball_' + team.capitalize + '_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
                     #t_short[team]['Attack_%'] = ((frame_data[team].to_f / num_frames) * 100.0).round(2)
                     #t_short[team]['Defense_%'] = ((frame_data[opposite(teams, team)].to_f / num_frames) * 100.0).round(2)
-                    e_short['Ball_' + team.capitalize + '_Side'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
+                    e_short['Ball'][team.capitalize + '_Side'] = ((@time_map.keys.length / num_frames.to_f) * frame_data[opposite(teams, team)]).round(2)
                 }
             end
         }
 
         height_frames.each{ |object_id, frame_data|
             if object_id == 'ball' then
-                e_short['Ball_Airtime_Low'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['low']).round(2)
-                e_short['Ball_Airtime_Medium'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['medium']).round(2)
-                e_short['Ball_Airtime_High'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['high']).round(2)
+                e_short['Ball']['Airtime_Low'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['low']).round(2)
+                e_short['Ball']['Airtime_Medium'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['medium']).round(2)
+                e_short['Ball']['Airtime_High'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['high']).round(2)
             else
                 uuID = @uuID_to_player_id[object_id.to_s]
                 p_short[uuID]['Airtime_Low'] = ((@time_map.keys.length / frame_data['count'].to_f) * frame_data['low']).round(2)
@@ -706,9 +708,9 @@ class ReplayReducer
         zone_frames.each{ |object_id, frame_data|
             num_frames = frame_data.values[0] + frame_data.values[1] + frame_data.values[2]
             if object_id == 'ball' then
-                e_short['Ball_Orange_Zone'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['orange']).round(2)
-                e_short['Ball_Blue_Zone'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['blue']).round(2)
-                e_short['Ball_Midfield'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['midfield']).round(2)
+                e_short['Ball']['Orange_Zone'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['orange']).round(2)
+                e_short['Ball']['Blue_Zone'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['blue']).round(2)
+                e_short['Ball']['Midfield'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['midfield']).round(2)
             else
                 uuID = @uuID_to_player_id[object_id.to_s]
                 p_short[uuID]['Orange_Zone_Time'] = ((@time_map.keys.length / num_frames.to_f) * frame_data['orange']).round(2)
@@ -931,6 +933,11 @@ class ReplayReducer
                 # sure this always works.
                 pos_data = @position_data[goal['frame'].to_i - 1]['ball']
             end
+
+            goal["Time"] = @time_map[select_closest(@time_map.keys, goal['frame'])]
+
+            goal['PlayerTeam'] = (goal['PlayerTeam'] == 0) ? "blue" : "orange"
+
             goal["Position"] = {'x' => pos_data['x'],
                                 'y' => pos_data['y'],
                                 'z' => pos_data['z']}
